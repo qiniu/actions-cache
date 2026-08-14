@@ -5,6 +5,9 @@ import * as crypto from "crypto";
 const versionSalt = "1.0";
 const maxReadPrefixes = 4;
 
+// Reject empty, current-directory, and parent-directory segments. Other S3
+// key characters are valid and remain operator-controlled.
+
 export interface S3PrefixOptions {
     compressionMethod?: CompressionMethod;
     enableCrossOsArchive: boolean;
@@ -48,6 +51,12 @@ export function getWriteS3Prefix(
     if (!writePrefix) {
         return undefined;
     }
+    if (!isValidS3Prefix(writePrefix)) {
+        core.warning(
+            `RUNS_ON_S3_CACHE_WRITE_PREFIX contains invalid path segments; cache save is disabled.`
+        );
+        return undefined;
+    }
     return getS3Prefix(writePrefix, paths, options);
 }
 
@@ -55,14 +64,25 @@ export function getReadS3Prefixes(
     paths: string[],
     options: S3PrefixOptions
 ): string[] {
-    return getReadRepositoryPrefixes().map(prefix =>
-        getS3Prefix(prefix, paths, options)
+    const repositoryPrefixes = getReadRepositoryPrefixes();
+    if (repositoryPrefixes.length === 0) {
+        return [];
+    }
+    // The cache version is prefix-independent; compute it once.
+    const version = getCacheVersion(
+        paths,
+        options.compressionMethod,
+        options.enableCrossOsArchive
     );
+    return repositoryPrefixes.map(prefix => [prefix, version].join("/"));
 }
 
 function getReadRepositoryPrefixes(): string[] {
     const raw = process.env.RUNS_ON_S3_CACHE_READ_PREFIXES;
     if (!raw || raw.trim() === "") {
+        core.warning(
+            "RUNS_ON_S3_CACHE_READ_PREFIXES is not set; cache restore is disabled."
+        );
         return [];
     }
 
@@ -74,9 +94,18 @@ function getReadRepositoryPrefixes(): string[] {
             );
             return [];
         }
-        const prefixes = uniqueNormalizedPrefixes(
+        const candidates = uniqueNormalizedPrefixes(
             parsed.filter((value): value is string => typeof value === "string")
         );
+        const prefixes = candidates.filter(prefix => {
+            if (isValidS3Prefix(prefix)) {
+                return true;
+            }
+            core.warning(
+                `RUNS_ON_S3_CACHE_READ_PREFIXES entry "${prefix}" contains invalid path segments and was skipped.`
+            );
+            return false;
+        });
         if (prefixes.length === 0) {
             core.warning(
                 "RUNS_ON_S3_CACHE_READ_PREFIXES contains no usable prefixes; cache restore is disabled."
@@ -121,6 +150,17 @@ function uniqueNormalizedPrefixes(values: string[]): string[] {
     return prefixes;
 }
 
-export function normalizeS3Prefix(prefix: string | undefined): string {
+export function isValidS3Prefix(prefix: string): boolean {
+    if (prefix === "") {
+        return false;
+    }
+    return prefix
+        .split("/")
+        .every(
+            segment => segment !== "" && segment !== "." && segment !== ".."
+        );
+}
+
+function normalizeS3Prefix(prefix: string | undefined): string {
     return (prefix || "").trim().replace(/^\/+|\/+$/g, "");
 }

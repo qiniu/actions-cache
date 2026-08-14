@@ -1,66 +1,48 @@
-# Shockingly faster cache action
+# Qiniu scoped S3 cache action
 
-This action is a drop-in replacement for the official `actions/cache@v5` action, for use with the [RunsOn](https://runs-on.com/?ref=cache) self-hosted GitHub Action runner provider, or with your own self-hosted runner solution.
+This action is a drop-in replacement for the official `actions/cache@v5` action. It supports direct S3-compatible storage with ordered restore scopes and a single write scope. It is used by [runnerd](https://github.com/qiniu/ci-runner) to provide GitHub-compatible branch, pull request, and default-branch cache isolation.
 
-![image](https://github.com/runs-on/cache/assets/6114/e61c5b6f-aa86-48be-9e1b-baac6dce9b84)
-
-It will automatically store your caches in a dedicated RunsOn S3 bucket that lives close to your self-hosted runners, ensuring you get at least 200MiB/s download and upload throughput when using caches in your workflows. The larger the cache, the faster the speed.
-
-Also note that you no longer have any limit on the size of the cache. The bucket has a lifecycle rule to remove items older than 10 days.
-
-If no S3 bucket is provided, it will also transparently switch to the default behaviour. This means you can use this action and switch between RunsOn runners and official GitHub runners with no change.
+> This fork is maintained for Qiniu's runnerd integration. The `RUNS_ON_*` environment variable names are retained for compatibility with the runner integration.
 
 >Two other actions are available in addition to the primary `cache` action:
 >
 >* [Restore action](./restore/README.md)
 >* [Save action](./save/README.md)
 
-[![Tests](https://github.com/runs-on/cache/actions/workflows/tests.yml/badge.svg)](https://github.com/runs-on/cache/actions/workflows/tests.yml)
+[![Tests](https://github.com/qiniu/actions-cache/actions/workflows/tests.yml/badge.svg)](https://github.com/qiniu/actions-cache/actions/workflows/tests.yml)
 
-## Usage with RunsOn
+## Usage with runnerd
 
-If using [RunsOn](https://runs-on.com), simply replace `actions/cache@v5` with `runs-on/cache@v5`. All the official options are supported.
+Replace `actions/cache@v5` with `qiniu/actions-cache@v5`. runnerd injects the S3 credentials, ordered read prefixes, and the single write prefix automatically:
 
 ```diff
 - - uses: actions/cache@v5
-+ - uses: runs-on/cache@v5
++ - uses: qiniu/actions-cache@v5
     with:
       ...
 ```
 
-Please refer to [actions/cache](https://github.com/actions/cache) for detailed usage.
-
-## Usage outside Qiniu CI Runner
-
-If you want to use this in your own infrastructure, setup your AWS credentials with [aws-actions/configure-aws-credentials](https://github.com/aws-actions/configure-aws-credentials), then:
-
-```yaml
-  - uses: aws-actions/configure-aws-credentials@v4
-    ...
-  - uses: qiniu/actions-cache@v5
-    with:
-      ...
-    env:
-      RUNS_ON_S3_BUCKET_CACHE: name-of-your-bucket
-      RUNS_ON_S3_CACHE_READ_PREFIXES: '["cache/owner/repo/branch"]'
-      RUNS_ON_S3_CACHE_WRITE_PREFIX: 'cache/owner/repo/branch'
-```
-
-The read prefixes are a JSON array searched in order during restore. The write prefix is the single namespace where caches are saved. When using [runnerd](https://github.com/qiniu/ci-runner), these variables are injected automatically based on the workflow's trust scope (branch, PR, or default branch).
-
-Be aware of S3 transfer costs if your runners are not in the same AWS region as your bucket.
+No cache-specific workflow environment variables are required when using runnerd. The custom backend is intentionally coupled to runnerd's injected scoped credentials and scope contract.
 
 ## Special environment variables
 
-* `RUNS_ON_S3_BUCKET_CACHE`: if set, the action will use this bucket to store the cache.
-* `RUNS_ON_S3_BUCKET_ENDPOINT`: if set, the action will use this endpoint to connect to the bucket. This is useful if you are using AWS's S3 transfer acceleration or a non-AWS S3-compatible service.
-* `RUNS_ON_S3_CACHE_READ_PREFIXES`: required JSON array of ordered S3 namespace prefixes searched during restore. The action searches every primary/restore key in the first prefix before trying the next prefix.
-* `RUNS_ON_S3_CACHE_WRITE_PREFIX`: optional single S3 namespace prefix used exclusively for saving. When absent, the post-job save is skipped without failing the workflow.
-* `RUNS_ON_S3_FORCE_PATH_STYLE` or `AWS_S3_FORCE_PATH_STYLE`: if one of those environment variables equals the string `"true"`, then the S3 client will be configured to force the path style.
+* `RUNS_ON_S3_BUCKET_CACHE`: if set, the action uses this bucket for the direct S3 backend. It must be paired with the scope variables below.
+* `RUNS_ON_S3_BUCKET_ENDPOINT`: S3-compatible endpoint.
+* `RUNS_ON_AWS_REGION`: S3 region. If absent, `AWS_REGION` or `AWS_DEFAULT_REGION` is used.
+* `RUNS_ON_S3_CACHE_READ_PREFIXES`: required JSON array of ordered S3 namespace prefixes searched during restore. The action searches every key in one prefix before trying the next. Entries are de-duplicated, validated, and capped at four. runnerd always provides this variable when cache restore is enabled.
+* `RUNS_ON_S3_CACHE_WRITE_PREFIX`: single S3 namespace used for saving. It must also be present in the read prefixes if the saved cache should be restorable. When absent, save is skipped before archive creation. runnerd provides this variable only for workflows with a writable cache scope.
+* `RUNS_ON_S3_ACCESS_KEY_ID`, `RUNS_ON_S3_SECRET_ACCESS_KEY`, `RUNS_ON_S3_SESSION_TOKEN`: runnerd-internal scoped STS credential variables. They are required when the custom backend is enabled; do not set them in workflow YAML.
+* `RUNS_ON_S3_FORCE_PATH_STYLE` or `AWS_S3_FORCE_PATH_STYLE`: force path-style S3 requests when set to `"true"`.
+
+## Security model
+
+The scope environment variables are inputs to the action, not an authorization boundary. A workflow can override them. runnerd generates scoped STS credentials and these variables from the same verified workflow decision; the STS policy is the enforcement point. It must allow `PutObject` only below the write prefix, and `GetObject` plus `ListBucket` only for the approved read prefixes. Never grant a job a less-trusted read scope.
+
+The S3 restore search is ordered by scope first: every requested key in the first scope is checked before the next scope. This intentionally prioritizes the closest scope over a more exact key in a later fallback scope, matching the runnerd scope contract. `ListObjectsV2` scans at most 10 pages per key prefix; when the limit is reached, the newest result among scanned objects is selected and a warning is emitted.
 
 ## Action pinning
 
-Contrary to the upstream action, `v5` is a branch that tracks the latest upstream v5 release with RunsOn patches applied. You can also pin to a specific commit.
+Contrary to the upstream action, `v5` is a branch that tracks the latest upstream v5 release with Qiniu runnerd patches applied. You can also pin to a specific commit.
 
 ## What's New
 

@@ -2,7 +2,6 @@ import * as core from "@actions/core";
 
 import {
     findCacheObject,
-    getCacheEntry,
     s3Client,
     selectCacheObject
 } from "../src/custom/backend";
@@ -11,6 +10,7 @@ import { getReadS3Prefixes, getWriteS3Prefix } from "../src/custom/prefix";
 afterEach(() => {
     delete process.env.RUNS_ON_S3_CACHE_READ_PREFIXES;
     delete process.env.RUNS_ON_S3_CACHE_WRITE_PREFIX;
+    delete process.env.RUNS_ON_S3_BUCKET_CACHE;
     jest.restoreAllMocks();
 });
 
@@ -43,6 +43,15 @@ test("S3 read prefixes preserve runner scope order and remove duplicates", () =>
     );
 });
 
+test("missing read prefixes emit a migration warning", () => {
+    const warning = jest.spyOn(core, "warning").mockImplementation();
+
+    expect(getReadS3Prefixes(paths, options)).toEqual([]);
+    expect(warning).toHaveBeenCalledWith(
+        "RUNS_ON_S3_CACHE_READ_PREFIXES is not set; cache restore is disabled."
+    );
+});
+
 test("invalid read-prefix JSON disables restore instead of falling back", () => {
     const warning = jest.spyOn(core, "warning").mockImplementation();
     process.env.RUNS_ON_S3_CACHE_READ_PREFIXES = "not-json";
@@ -50,6 +59,19 @@ test("invalid read-prefix JSON disables restore instead of falling back", () => 
     expect(getReadS3Prefixes(paths, options)).toEqual([]);
     expect(warning).toHaveBeenCalledWith(
         "RUNS_ON_S3_CACHE_READ_PREFIXES is invalid JSON; cache restore is disabled."
+    );
+});
+
+test("prefixes reject traversal segments but allow S3 key characters", () => {
+    process.env.RUNS_ON_S3_CACHE_READ_PREFIXES = JSON.stringify([
+        "cache/owner/repo/feature+name",
+        "cache/owner/repo/../default",
+        "cache/owner/repo/feature//name"
+    ]);
+
+    expect(getReadS3Prefixes(paths, options)).toHaveLength(1);
+    expect(getReadS3Prefixes(paths, options)[0]).toMatch(
+        /^cache\/owner\/repo\/feature\+name\/[a-f0-9]{64}$/
     );
 });
 
@@ -69,44 +91,38 @@ test("read prefixes are capped", () => {
     );
 });
 
-test("restore searches every key in the first scope before trying the next scope", async () => {
-    process.env.RUNS_ON_S3_CACHE_READ_PREFIXES = JSON.stringify([
-        "scope/pr",
-        "scope/default"
-    ]);
-    const prefixes: string[] = [];
+test("restore key lookup stays within the selected scope", async () => {
+    process.env.RUNS_ON_S3_BUCKET_CACHE = "cache-bucket";
     const send = jest
         .spyOn(s3Client, "send")
         .mockImplementation(async command => {
             const input = command.input as { Prefix?: string };
-            prefixes.push(input.Prefix || "");
-            if (
-                input.Prefix?.includes("scope/default") &&
-                input.Prefix.endsWith("/primary")
-            ) {
+            if (input.Prefix === "scope/pr/version/primary") {
+                return { Contents: [] } as never;
+            }
+            if (input.Prefix === "scope/pr/version/restore-") {
                 return {
                     Contents: [
                         {
-                            Key: input.Prefix,
+                            Key: "scope/pr/version/restore-hit",
                             LastModified: new Date("2026-01-01")
                         }
                     ]
                 } as never;
             }
-            return { Contents: [] } as never;
+            throw new Error(`unexpected S3 prefix ${input.Prefix}`);
         });
 
-    const entry = await getCacheEntry(["primary", "restore-"], paths, options);
+    const primary = await findCacheObject("scope/pr/version", "primary");
+    const restore = await findCacheObject("scope/pr/version", "restore-");
 
-    expect(entry.cacheKey).toBe("primary");
-    expect(prefixes).toHaveLength(3);
-    expect(prefixes[0]).toMatch(/^scope\/pr\/[a-f0-9]{64}\/primary$/);
-    expect(prefixes[1]).toMatch(/^scope\/pr\/[a-f0-9]{64}\/restore-$/);
-    expect(prefixes[2]).toMatch(/^scope\/default\/[a-f0-9]{64}\/primary$/);
-    expect(send).toHaveBeenCalledTimes(3);
+    expect(primary).toBeUndefined();
+    expect(restore?.Key).toBe("scope/pr/version/restore-hit");
+    expect(send).toHaveBeenCalledTimes(2);
 });
 
 test("cache lookup follows ListObjectsV2 pagination", async () => {
+    process.env.RUNS_ON_S3_BUCKET_CACHE = "cache-bucket";
     const send = jest
         .spyOn(s3Client, "send")
         .mockImplementation(async command => {
