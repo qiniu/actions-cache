@@ -30,19 +30,23 @@ If using [RunsOn](https://runs-on.com), simply replace `actions/cache@v5` with `
 
 Please refer to [actions/cache](https://github.com/actions/cache) for detailed usage.
 
-## Usage outside RunsOn
+## Usage outside Qiniu CI Runner
 
 If you want to use this in your own infrastructure, setup your AWS credentials with [aws-actions/configure-aws-credentials](https://github.com/aws-actions/configure-aws-credentials), then:
 
 ```yaml
   - uses: aws-actions/configure-aws-credentials@v4
     ...
-  - uses: runs-on/cache@v5
+  - uses: qiniu/actions-cache@v5
     with:
       ...
     env:
       RUNS_ON_S3_BUCKET_CACHE: name-of-your-bucket
+      RUNS_ON_S3_CACHE_READ_PREFIXES: '["cache/owner/repo/branch"]'
+      RUNS_ON_S3_CACHE_WRITE_PREFIX: 'cache/owner/repo/branch'
 ```
+
+The read prefixes are a JSON array searched in order during restore. The write prefix is the single namespace where caches are saved. When using [runnerd](https://github.com/qiniu/ci-runner), these variables are injected automatically based on the workflow's trust scope (branch, PR, or default branch).
 
 Be aware of S3 transfer costs if your runners are not in the same AWS region as your bucket.
 
