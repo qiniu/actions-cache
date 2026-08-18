@@ -73413,9 +73413,12 @@ function selectCacheObject(objects, exactKey) {
     }
     return objects.reduce((newest, object) => {
         var _a, _b;
+        const objectTime = ((_a = object.LastModified) === null || _a === void 0 ? void 0 : _a.getTime()) || 0;
+        const newestTime = ((_b = newest === null || newest === void 0 ? void 0 : newest.LastModified) === null || _b === void 0 ? void 0 : _b.getTime()) || 0;
         if (!newest ||
-            (((_a = object.LastModified) === null || _a === void 0 ? void 0 : _a.getTime()) || 0) >
-                (((_b = newest.LastModified) === null || _b === void 0 ? void 0 : _b.getTime()) || 0)) {
+            objectTime > newestTime ||
+            (objectTime === newestTime &&
+                (object.Key || "") > (newest.Key || ""))) {
             return object;
         }
         return newest;

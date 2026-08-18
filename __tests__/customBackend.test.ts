@@ -176,6 +176,24 @@ test("exact cache key wins over a newer partial key", () => {
     expect(selected?.Key).toBe(exact);
 });
 
+test("cache lookup uses the key as a deterministic timestamp tie-breaker", () => {
+    const prefix = "cache/repo/version";
+    const selected = selectCacheObject(
+        [
+            {
+                Key: `${prefix}/Linux-go-a`,
+                LastModified: new Date("2026-01-01")
+            },
+            {
+                Key: `${prefix}/Linux-go-b`,
+                LastModified: new Date("2026-01-01")
+            }
+        ],
+        `${prefix}/Linux-go-miss`
+    );
+
+    expect(selected?.Key).toBe(`${prefix}/Linux-go-b`);
+});
 test("newest partial cache key is selected when exact key is absent", () => {
     const prefix = "cache/repo/version";
     const selected = selectCacheObject(

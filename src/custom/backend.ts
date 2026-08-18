@@ -146,10 +146,13 @@ export function selectCacheObject(
         return exact;
     }
     return objects.reduce<S3Object | undefined>((newest, object) => {
+        const objectTime = object.LastModified?.getTime() || 0;
+        const newestTime = newest?.LastModified?.getTime() || 0;
         if (
             !newest ||
-            (object.LastModified?.getTime() || 0) >
-                (newest.LastModified?.getTime() || 0)
+            objectTime > newestTime ||
+            (objectTime === newestTime &&
+                (object.Key || "") > (newest.Key || ""))
         ) {
             return object;
         }
