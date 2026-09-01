@@ -10,19 +10,24 @@ import {
 } from "./stateProvider";
 import * as utils from "./utils/actionUtils";
 
-const canSaveToS3 = process.env["RUNS_ON_S3_BUCKET_CACHE"] !== undefined;
+function isS3BackendEnabled(): boolean {
+    return process.env["RUNS_ON_S3_BUCKET_CACHE"] !== undefined;
+}
 
 // Catch and log any unhandled exceptions.  These exceptions can leak out of the uploadChunk method in
 // @actions/toolkit when a failed upload closes the file descriptor causing any in-process reads to
 // throw an uncaught exception.  Instead of failing this action, just warn.
 process.on("uncaughtException", e => utils.logWarning(e.message));
 
+export type SaveResult = "saved" | "skipped" | "failed";
+
 export async function saveImpl(
     stateProvider: IStateProvider
-): Promise<number | void> {
+): Promise<SaveResult | void> {
+    let result: SaveResult | undefined;
     let cacheId = -1;
     try {
-        if (!canSaveToS3 && !utils.isCacheFeatureAvailable()) {
+        if (!isS3BackendEnabled() && !utils.isCacheFeatureAvailable()) {
             return;
         }
 
@@ -65,12 +70,12 @@ export async function saveImpl(
             Inputs.EnableCrossOsArchive
         );
 
-        if (canSaveToS3) {
+        if (isS3BackendEnabled()) {
             core.info(
                 "The cache action detected a local S3 bucket cache. Using it."
             );
 
-            cacheId = await custom.saveCache(
+            result = await custom.saveCache(
                 cachePaths,
                 primaryKey,
                 {
@@ -79,6 +84,7 @@ export async function saveImpl(
                 enableCrossOsArchive
             );
         } else {
+            result = "failed";
             cacheId = await cache.saveCache(
                 cachePaths,
                 primaryKey,
@@ -87,23 +93,27 @@ export async function saveImpl(
                 },
                 enableCrossOsArchive
             );
+            if (cacheId != -1) {
+                result = "saved";
+            }
         }
 
-        if (cacheId != -1) {
+        if (result === "saved") {
             core.info(`Cache saved with key: ${primaryKey}`);
         }
     } catch (error: unknown) {
+        result = "failed";
         utils.logWarning((error as Error).message);
     }
-    return cacheId;
+    return result;
 }
 
 export async function saveOnlyRun(
     earlyExit?: boolean | undefined
 ): Promise<void> {
     try {
-        const cacheId = await saveImpl(new NullStateProvider());
-        if (cacheId === -1) {
+        const result = await saveImpl(new NullStateProvider());
+        if (result === "failed") {
             core.warning(`Cache save failed.`);
         }
     } catch (err) {

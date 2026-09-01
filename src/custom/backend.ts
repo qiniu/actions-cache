@@ -11,7 +11,14 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createReadStream } from "fs";
 
 import { downloadCacheHttpClientConcurrent } from "./downloadUtils";
-import { getS3Prefix } from "./prefix";
+import { getReadS3Prefixes, getWriteS3Prefix, S3PrefixOptions } from "./prefix";
+
+const maxListPages = 10;
+
+type S3Object = {
+    Key?: string;
+    LastModified?: Date;
+};
 
 export interface ArtifactCacheEntry {
     cacheKey?: string;
@@ -21,17 +28,20 @@ export interface ArtifactCacheEntry {
     archiveLocation?: string;
 }
 
-// if executing from RunsOn, unset any existing AWS credential env variables so that we can use the IAM instance profile for credentials
-// see unsetCredentials() in https://github.com/aws-actions/configure-aws-credentials/blob/v4.0.2/src/helpers.ts#L44
-// Note: we preserve AWS_REGION and AWS_DEFAULT_REGION as they are needed for SDK initialization
-if (process.env.RUNS_ON_RUNNER_NAME && process.env.RUNS_ON_RUNNER_NAME !== "") {
-    delete process.env.AWS_ACCESS_KEY_ID;
-    delete process.env.AWS_SECRET_ACCESS_KEY;
-    delete process.env.AWS_SESSION_TOKEN;
-}
+const runnerdCredentials = {
+    accessKeyId: process.env.RUNS_ON_S3_ACCESS_KEY_ID || "",
+    secretAccessKey: process.env.RUNS_ON_S3_SECRET_ACCESS_KEY || "",
+    sessionToken: process.env.RUNS_ON_S3_SESSION_TOKEN
+};
 
-const bucketName = process.env.RUNS_ON_S3_BUCKET_CACHE;
 const endpoint = process.env.RUNS_ON_S3_BUCKET_ENDPOINT;
+function getBucketName(): string {
+    const value = process.env.RUNS_ON_S3_BUCKET_CACHE;
+    if (!value) {
+        throw new Error("Environment variable RUNS_ON_S3_BUCKET_CACHE not set");
+    }
+    return value;
+}
 const region =
     process.env.RUNS_ON_AWS_REGION ||
     process.env.AWS_REGION ||
@@ -47,49 +57,107 @@ const downloadQueueSize = Number(process.env.DOWNLOAD_QUEUE_SIZE || "8");
 const downloadPartSize =
     Number(process.env.DOWNLOAD_PART_SIZE || "16") * 1024 * 1024;
 
-const s3Client = new S3Client({ region, forcePathStyle, endpoint });
+export const s3Client = new S3Client({
+    region,
+    forcePathStyle,
+    endpoint,
+    credentials: runnerdCredentials
+});
 
 export async function getCacheEntry(
-    keys,
-    paths,
-    { compressionMethod, enableCrossOsArchive }
-) {
-    const cacheEntry: ArtifactCacheEntry = {};
+    keys: string[],
+    paths: string[],
+    options: S3PrefixOptions
+): Promise<ArtifactCacheEntry> {
+    const bucket = getBucketName();
+    const readPrefixes = getReadS3Prefixes(paths, options);
 
-    // Find the most recent key matching one of the restoreKeys prefixes
-    for (const restoreKey of keys) {
-        const s3Prefix = getS3Prefix(paths, {
-            compressionMethod,
-            enableCrossOsArchive
-        });
-        const listObjectsParams = {
-            Bucket: bucketName,
-            Prefix: [s3Prefix, restoreKey].join("/")
-        };
-
+    for (const s3Prefix of readPrefixes) {
+        // Scope order is significant, but keys within one scope can be
+        // searched concurrently because ListObjectsV2 is read-only. Keep the
+        // original key order when selecting the first match.
         try {
-            const { Contents = [] } = await s3Client.send(
-                new ListObjectsV2Command(listObjectsParams)
+            const matches = await Promise.all(
+                keys.map(restoreKey => findCacheObject(s3Prefix, restoreKey))
             );
-            if (Contents.length > 0) {
-                // Sort keys by LastModified time in descending order
-                const sortedKeys = Contents.sort(
-                    (a, b) => Number(b.LastModified) - Number(a.LastModified)
-                );
-                const s3Path = sortedKeys[0].Key; // Return the most recent key
-                cacheEntry.cacheKey = s3Path?.replace(`${s3Prefix}/`, "");
-                cacheEntry.archiveLocation = `s3://${bucketName}/${s3Path}`;
-                return cacheEntry;
+            for (const object of matches) {
+                if (!object?.Key) {
+                    continue;
+                }
+                return {
+                    cacheKey: object.Key.slice(s3Prefix.length + 1),
+                    archiveLocation: `s3://${bucket}/${object.Key}`
+                };
             }
         } catch (error) {
-            console.error(
-                `Error listing objects with prefix ${restoreKey} in bucket ${bucketName}:`,
-                error
+            core.warning(
+                `Skipping S3 cache scope ${s3Prefix}: ${(error as Error).message}`
             );
         }
     }
 
-    return cacheEntry; // No keys found
+    return {};
+}
+
+export async function findCacheObject(
+    s3Prefix: string,
+    restoreKey: string
+): Promise<S3Object | undefined> {
+    const prefix = `${s3Prefix}/${restoreKey}`;
+    const objects: S3Object[] = [];
+    let continuationToken: string | undefined;
+
+    for (let page = 0; page < maxListPages; page++) {
+        const response = await s3Client.send(
+            new ListObjectsV2Command({
+                Bucket: getBucketName(),
+                Prefix: prefix,
+                ContinuationToken: continuationToken
+            })
+        );
+        const contents = response.Contents || [];
+        // S3 lists keys lexicographically; the exact key is always the first
+        // entry of the first page when it exists, so return immediately.
+        if (contents.some(object => object.Key === prefix)) {
+            return contents.find(object => object.Key === prefix);
+        }
+        objects.push(...contents);
+        if (!response.IsTruncated || !response.NextContinuationToken) {
+            continuationToken = undefined;
+            break;
+        }
+        continuationToken = response.NextContinuationToken;
+    }
+    if (continuationToken) {
+        core.warning(
+            `S3 cache search for ${prefix} reached the ${maxListPages}-page listing limit; selecting the best result scanned.`
+        );
+    }
+
+    return selectCacheObject(objects, prefix);
+}
+
+export function selectCacheObject(
+    objects: S3Object[],
+    exactKey: string
+): S3Object | undefined {
+    const exact = objects.find(object => object.Key === exactKey);
+    if (exact) {
+        return exact;
+    }
+    return objects.reduce<S3Object | undefined>((newest, object) => {
+        const objectTime = object.LastModified?.getTime() || 0;
+        const newestTime = newest?.LastModified?.getTime() || 0;
+        if (
+            !newest ||
+            objectTime > newestTime ||
+            (objectTime === newestTime &&
+                (object.Key || "") > (newest.Key || ""))
+        ) {
+            return object;
+        }
+        return newest;
+    }, undefined);
 }
 
 export async function downloadCache(
@@ -97,14 +165,10 @@ export async function downloadCache(
     archivePath: string,
     options?: DownloadOptions
 ): Promise<void> {
-    if (!bucketName) {
-        throw new Error("Environment variable RUNS_ON_S3_BUCKET_CACHE not set");
-    }
-
+    const bucket = getBucketName();
     if (!region) {
         throw new Error("Environment variable RUNS_ON_AWS_REGION not set");
     }
-
     const archiveUrl = new URL(archiveLocation);
     const objectKey = archiveUrl.pathname.slice(1);
 
@@ -115,7 +179,7 @@ export async function downloadCache(
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             const command = new GetObjectCommand({
-                Bucket: bucketName,
+                Bucket: bucket,
                 Key: objectKey
             });
             const url = await getSignedUrl(s3Client, command, {
@@ -165,27 +229,30 @@ export async function saveCache(
     paths: string[],
     archivePath: string,
     options
-): Promise<void> {
+): Promise<boolean> {
     const { compressionMethod, enableCrossOsArchive } = options;
-
-    if (!bucketName) {
-        throw new Error("Environment variable RUNS_ON_S3_BUCKET_CACHE not set");
-    }
+    const bucket = getBucketName();
 
     if (!region) {
         throw new Error("Environment variable RUNS_ON_AWS_REGION not set");
     }
 
-    const s3Prefix = getS3Prefix(paths, {
+    const s3Prefix = getWriteS3Prefix(paths, {
         compressionMethod,
         enableCrossOsArchive
     });
+    if (!s3Prefix) {
+        core.info(
+            "Cache save skipped: RUNS_ON_S3_CACHE_WRITE_PREFIX is not set, so this workflow has no writable S3 cache scope."
+        );
+        return false;
+    }
     const s3Key = `${s3Prefix}/${key}`;
 
     const multipartUpload = new Upload({
         client: s3Client,
         params: {
-            Bucket: bucketName,
+            Bucket: bucket,
             Key: s3Key,
             Body: createReadStream(archivePath)
         },
@@ -204,11 +271,12 @@ export async function saveCache(
     );
 
     const totalParts = Math.ceil(cacheSize / uploadPartSize);
-    core.info(`Uploading cache from ${archivePath} to ${bucketName}/${s3Key}`);
+    core.info(`Uploading cache from ${archivePath} to ${bucket}/${s3Key}`);
     multipartUpload.on("httpUploadProgress", progress => {
         core.info(`Uploaded part ${progress.part}/${totalParts}.`);
     });
 
     await multipartUpload.done();
     core.info(`Cache saved successfully.`);
+    return true;
 }

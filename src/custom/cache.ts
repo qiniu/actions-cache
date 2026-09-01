@@ -10,6 +10,7 @@ import {
     listTar
 } from "@actions/cache/lib/internal/tar";
 import { DownloadOptions, UploadOptions } from "@actions/cache/lib/options";
+import { getWriteS3Prefix } from "./prefix";
 
 export class ValidationError extends Error {
     constructor(message: string) {
@@ -53,6 +54,12 @@ function checkKey(key: string): void {
     if (!regex.test(key)) {
         throw new ValidationError(
             `Key Validation Error: ${key} cannot contain commas.`
+        );
+    }
+    const segments = key.split("/");
+    if (segments.some(segment => segment === "." || segment === "..")) {
+        throw new ValidationError(
+            `Key Validation Error: ${key} cannot contain . or .. path segments.`
         );
     }
 }
@@ -186,19 +193,32 @@ export async function restoreCache(
  * @param key an explicit key for restoring the cache
  * @param enableCrossOsArchive an optional boolean enabled to save cache on windows which could be restored on any platform
  * @param options cache upload options
- * @returns number returns cacheId if the cache was saved successfully and throws an error if save fails
+ * @returns "saved" if the cache was uploaded, "skipped" when no writable scope is configured, "failed" on upload failure
  */
 export async function saveCache(
     paths: string[],
     key: string,
     options?: UploadOptions,
     enableCrossOsArchive = false
-): Promise<number> {
+): Promise<"saved" | "skipped" | "failed"> {
     checkPaths(paths);
     checkKey(key);
 
     const compressionMethod = await utils.getCompressionMethod();
-    let cacheId = -1;
+    let result: "saved" | "skipped" | "failed" = "failed";
+
+    // Check for a writable scope before archiving so read-only jobs skip the
+    // full tar/compression cost, not just the upload.
+    const writePrefix = getWriteS3Prefix(paths, {
+        compressionMethod,
+        enableCrossOsArchive
+    });
+    if (!writePrefix) {
+        core.info(
+            "Cache save skipped: RUNS_ON_S3_CACHE_WRITE_PREFIX is not set, so this workflow has no writable S3 cache scope."
+        );
+        return "skipped";
+    }
 
     const cachePaths = await utils.resolvePaths(paths);
     core.debug("Cache Paths:");
@@ -226,14 +246,15 @@ export async function saveCache(
         const archiveFileSize = utils.getArchiveFileSizeInBytes(archivePath);
         core.debug(`File Size: ${archiveFileSize}`);
 
-        await cacheHttpClient.saveCache(key, paths, archivePath, {
+        const saved = await cacheHttpClient.saveCache(key, paths, archivePath, {
             compressionMethod,
             enableCrossOsArchive,
             cacheSize: archiveFileSize
         });
 
-        // dummy cacheId, if we get there without raising, it means the cache has been saved
-        cacheId = 1;
+        if (saved) {
+            result = "saved";
+        }
     } catch (error) {
         const typedError = error as Error;
         if (typedError.name === ValidationError.name) {
@@ -252,5 +273,5 @@ export async function saveCache(
         }
     }
 
-    return cacheId;
+    return result;
 }

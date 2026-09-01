@@ -71,6 +71,7 @@ afterEach(() => {
     testUtils.clearInputs();
     delete process.env[Events.Key];
     delete process.env[RefKey];
+    delete process.env.RUNS_ON_S3_BUCKET_CACHE;
 });
 
 test("save with valid inputs uploads a cache", async () => {
@@ -105,6 +106,19 @@ test("save with valid inputs uploads a cache", async () => {
     expect(failedMock).toHaveBeenCalledTimes(0);
 });
 
+test("save-only does not warn when custom save is skipped", async () => {
+    process.env.RUNS_ON_S3_BUCKET_CACHE = "cache-bucket";
+    const warningMock = jest.spyOn(core, "warning");
+    const custom = await import("../src/custom/cache");
+    jest.spyOn(custom, "saveCache").mockResolvedValue("skipped");
+
+    testUtils.setInput(Inputs.Key, "Linux-node-key");
+    testUtils.setInput(Inputs.Path, "node_modules");
+
+    await saveOnlyRun();
+
+    expect(warningMock).not.toHaveBeenCalledWith("Cache save failed.");
+});
 test("save failing logs the warning message", async () => {
     const warningMock = jest.spyOn(core, "warning");
 

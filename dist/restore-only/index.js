@@ -73306,7 +73306,10 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.s3Client = void 0;
 exports.getCacheEntry = getCacheEntry;
+exports.findCacheObject = findCacheObject;
+exports.selectCacheObject = selectCacheObject;
 exports.downloadCache = downloadCache;
 exports.saveCache = saveCache;
 const utils = __importStar(__nccwpck_require__(98299));
@@ -73317,16 +73320,20 @@ const s3_request_presigner_1 = __nccwpck_require__(18505);
 const fs_1 = __nccwpck_require__(79896);
 const downloadUtils_1 = __nccwpck_require__(118);
 const prefix_1 = __nccwpck_require__(33327);
-// if executing from RunsOn, unset any existing AWS credential env variables so that we can use the IAM instance profile for credentials
-// see unsetCredentials() in https://github.com/aws-actions/configure-aws-credentials/blob/v4.0.2/src/helpers.ts#L44
-// Note: we preserve AWS_REGION and AWS_DEFAULT_REGION as they are needed for SDK initialization
-if (process.env.RUNS_ON_RUNNER_NAME && process.env.RUNS_ON_RUNNER_NAME !== "") {
-    delete process.env.AWS_ACCESS_KEY_ID;
-    delete process.env.AWS_SECRET_ACCESS_KEY;
-    delete process.env.AWS_SESSION_TOKEN;
-}
-const bucketName = process.env.RUNS_ON_S3_BUCKET_CACHE;
+const maxListPages = 10;
+const runnerdCredentials = {
+    accessKeyId: process.env.RUNS_ON_S3_ACCESS_KEY_ID || "",
+    secretAccessKey: process.env.RUNS_ON_S3_SECRET_ACCESS_KEY || "",
+    sessionToken: process.env.RUNS_ON_S3_SESSION_TOKEN
+};
 const endpoint = process.env.RUNS_ON_S3_BUCKET_ENDPOINT;
+function getBucketName() {
+    const value = process.env.RUNS_ON_S3_BUCKET_CACHE;
+    if (!value) {
+        throw new Error("Environment variable RUNS_ON_S3_BUCKET_CACHE not set");
+    }
+    return value;
+}
 const region = process.env.RUNS_ON_AWS_REGION ||
     process.env.AWS_REGION ||
     process.env.AWS_DEFAULT_REGION;
@@ -73336,43 +73343,90 @@ const uploadQueueSize = Number(process.env.UPLOAD_QUEUE_SIZE || "4");
 const uploadPartSize = Number(process.env.UPLOAD_PART_SIZE || "32") * 1024 * 1024;
 const downloadQueueSize = Number(process.env.DOWNLOAD_QUEUE_SIZE || "8");
 const downloadPartSize = Number(process.env.DOWNLOAD_PART_SIZE || "16") * 1024 * 1024;
-const s3Client = new client_s3_1.S3Client({ region, forcePathStyle, endpoint });
-function getCacheEntry(keys_1, paths_1, _a) {
-    return __awaiter(this, arguments, void 0, function* (keys, paths, { compressionMethod, enableCrossOsArchive }) {
-        const cacheEntry = {};
-        // Find the most recent key matching one of the restoreKeys prefixes
-        for (const restoreKey of keys) {
-            const s3Prefix = (0, prefix_1.getS3Prefix)(paths, {
-                compressionMethod,
-                enableCrossOsArchive
-            });
-            const listObjectsParams = {
-                Bucket: bucketName,
-                Prefix: [s3Prefix, restoreKey].join("/")
-            };
+exports.s3Client = new client_s3_1.S3Client({
+    region,
+    forcePathStyle,
+    endpoint,
+    credentials: runnerdCredentials
+});
+function getCacheEntry(keys, paths, options) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const bucket = getBucketName();
+        const readPrefixes = (0, prefix_1.getReadS3Prefixes)(paths, options);
+        for (const s3Prefix of readPrefixes) {
+            // Scope order is significant, but keys within one scope can be
+            // searched concurrently because ListObjectsV2 is read-only. Keep the
+            // original key order when selecting the first match.
             try {
-                const { Contents = [] } = yield s3Client.send(new client_s3_1.ListObjectsV2Command(listObjectsParams));
-                if (Contents.length > 0) {
-                    // Sort keys by LastModified time in descending order
-                    const sortedKeys = Contents.sort((a, b) => Number(b.LastModified) - Number(a.LastModified));
-                    const s3Path = sortedKeys[0].Key; // Return the most recent key
-                    cacheEntry.cacheKey = s3Path === null || s3Path === void 0 ? void 0 : s3Path.replace(`${s3Prefix}/`, "");
-                    cacheEntry.archiveLocation = `s3://${bucketName}/${s3Path}`;
-                    return cacheEntry;
+                const matches = yield Promise.all(keys.map(restoreKey => findCacheObject(s3Prefix, restoreKey)));
+                for (const object of matches) {
+                    if (!(object === null || object === void 0 ? void 0 : object.Key)) {
+                        continue;
+                    }
+                    return {
+                        cacheKey: object.Key.slice(s3Prefix.length + 1),
+                        archiveLocation: `s3://${bucket}/${object.Key}`
+                    };
                 }
             }
             catch (error) {
-                console.error(`Error listing objects with prefix ${restoreKey} in bucket ${bucketName}:`, error);
+                core.warning(`Skipping S3 cache scope ${s3Prefix}: ${error.message}`);
             }
         }
-        return cacheEntry; // No keys found
+        return {};
     });
+}
+function findCacheObject(s3Prefix, restoreKey) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const prefix = `${s3Prefix}/${restoreKey}`;
+        const objects = [];
+        let continuationToken;
+        for (let page = 0; page < maxListPages; page++) {
+            const response = yield exports.s3Client.send(new client_s3_1.ListObjectsV2Command({
+                Bucket: getBucketName(),
+                Prefix: prefix,
+                ContinuationToken: continuationToken
+            }));
+            const contents = response.Contents || [];
+            // S3 lists keys lexicographically; the exact key is always the first
+            // entry of the first page when it exists, so return immediately.
+            if (contents.some(object => object.Key === prefix)) {
+                return contents.find(object => object.Key === prefix);
+            }
+            objects.push(...contents);
+            if (!response.IsTruncated || !response.NextContinuationToken) {
+                continuationToken = undefined;
+                break;
+            }
+            continuationToken = response.NextContinuationToken;
+        }
+        if (continuationToken) {
+            core.warning(`S3 cache search for ${prefix} reached the ${maxListPages}-page listing limit; selecting the best result scanned.`);
+        }
+        return selectCacheObject(objects, prefix);
+    });
+}
+function selectCacheObject(objects, exactKey) {
+    const exact = objects.find(object => object.Key === exactKey);
+    if (exact) {
+        return exact;
+    }
+    return objects.reduce((newest, object) => {
+        var _a, _b;
+        const objectTime = ((_a = object.LastModified) === null || _a === void 0 ? void 0 : _a.getTime()) || 0;
+        const newestTime = ((_b = newest === null || newest === void 0 ? void 0 : newest.LastModified) === null || _b === void 0 ? void 0 : _b.getTime()) || 0;
+        if (!newest ||
+            objectTime > newestTime ||
+            (objectTime === newestTime &&
+                (object.Key || "") > (newest.Key || ""))) {
+            return object;
+        }
+        return newest;
+    }, undefined);
 }
 function downloadCache(archiveLocation, archivePath, options) {
     return __awaiter(this, void 0, void 0, function* () {
-        if (!bucketName) {
-            throw new Error("Environment variable RUNS_ON_S3_BUCKET_CACHE not set");
-        }
+        const bucket = getBucketName();
         if (!region) {
             throw new Error("Environment variable RUNS_ON_AWS_REGION not set");
         }
@@ -73384,10 +73438,10 @@ function downloadCache(archiveLocation, archivePath, options) {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 const command = new client_s3_1.GetObjectCommand({
-                    Bucket: bucketName,
+                    Bucket: bucket,
                     Key: objectKey
                 });
-                const url = yield (0, s3_request_presigner_1.getSignedUrl)(s3Client, command, {
+                const url = yield (0, s3_request_presigner_1.getSignedUrl)(exports.s3Client, command, {
                     expiresIn: 3600
                 });
                 yield (0, downloadUtils_1.downloadCacheHttpClientConcurrent)(url, archivePath, Object.assign(Object.assign({}, options), { downloadConcurrency: downloadQueueSize, concurrentBlobDownloads: true, partSize: downloadPartSize }));
@@ -73419,21 +73473,23 @@ function downloadCache(archiveLocation, archivePath, options) {
 function saveCache(key, paths, archivePath, options) {
     return __awaiter(this, void 0, void 0, function* () {
         const { compressionMethod, enableCrossOsArchive } = options;
-        if (!bucketName) {
-            throw new Error("Environment variable RUNS_ON_S3_BUCKET_CACHE not set");
-        }
+        const bucket = getBucketName();
         if (!region) {
             throw new Error("Environment variable RUNS_ON_AWS_REGION not set");
         }
-        const s3Prefix = (0, prefix_1.getS3Prefix)(paths, {
+        const s3Prefix = (0, prefix_1.getWriteS3Prefix)(paths, {
             compressionMethod,
             enableCrossOsArchive
         });
+        if (!s3Prefix) {
+            core.info("Cache save skipped: RUNS_ON_S3_CACHE_WRITE_PREFIX is not set, so this workflow has no writable S3 cache scope.");
+            return false;
+        }
         const s3Key = `${s3Prefix}/${key}`;
         const multipartUpload = new lib_storage_1.Upload({
-            client: s3Client,
+            client: exports.s3Client,
             params: {
-                Bucket: bucketName,
+                Bucket: bucket,
                 Key: s3Key,
                 Body: (0, fs_1.createReadStream)(archivePath)
             },
@@ -73446,12 +73502,13 @@ function saveCache(key, paths, archivePath, options) {
         const cacheSize = utils.getArchiveFileSizeInBytes(archivePath);
         core.info(`Cache Size: ~${Math.round(cacheSize / (1024 * 1024))} MB (${cacheSize} B)`);
         const totalParts = Math.ceil(cacheSize / uploadPartSize);
-        core.info(`Uploading cache from ${archivePath} to ${bucketName}/${s3Key}`);
+        core.info(`Uploading cache from ${archivePath} to ${bucket}/${s3Key}`);
         multipartUpload.on("httpUploadProgress", progress => {
             core.info(`Uploaded part ${progress.part}/${totalParts}.`);
         });
         yield multipartUpload.done();
         core.info(`Cache saved successfully.`);
+        return true;
     });
 }
 
@@ -73516,6 +73573,7 @@ const path = __importStar(__nccwpck_require__(16928));
 const utils = __importStar(__nccwpck_require__(98299));
 const cacheHttpClient = __importStar(__nccwpck_require__(35951));
 const tar_1 = __nccwpck_require__(95321);
+const prefix_1 = __nccwpck_require__(33327);
 class ValidationError extends Error {
     constructor(message) {
         super(message);
@@ -73552,6 +73610,10 @@ function checkKey(key) {
     const regex = /^[^,]*$/;
     if (!regex.test(key)) {
         throw new ValidationError(`Key Validation Error: ${key} cannot contain commas.`);
+    }
+    const segments = key.split("/");
+    if (segments.some(segment => segment === "." || segment === "..")) {
+        throw new ValidationError(`Key Validation Error: ${key} cannot contain . or .. path segments.`);
     }
 }
 /**
@@ -73651,14 +73713,24 @@ function restoreCache(paths_1, primaryKey_1, restoreKeys_1, options_1) {
  * @param key an explicit key for restoring the cache
  * @param enableCrossOsArchive an optional boolean enabled to save cache on windows which could be restored on any platform
  * @param options cache upload options
- * @returns number returns cacheId if the cache was saved successfully and throws an error if save fails
+ * @returns "saved" if the cache was uploaded, "skipped" when no writable scope is configured, "failed" on upload failure
  */
 function saveCache(paths_1, key_1, options_1) {
     return __awaiter(this, arguments, void 0, function* (paths, key, options, enableCrossOsArchive = false) {
         checkPaths(paths);
         checkKey(key);
         const compressionMethod = yield utils.getCompressionMethod();
-        let cacheId = -1;
+        let result = "failed";
+        // Check for a writable scope before archiving so read-only jobs skip the
+        // full tar/compression cost, not just the upload.
+        const writePrefix = (0, prefix_1.getWriteS3Prefix)(paths, {
+            compressionMethod,
+            enableCrossOsArchive
+        });
+        if (!writePrefix) {
+            core.info("Cache save skipped: RUNS_ON_S3_CACHE_WRITE_PREFIX is not set, so this workflow has no writable S3 cache scope.");
+            return "skipped";
+        }
         const cachePaths = yield utils.resolvePaths(paths);
         core.debug("Cache Paths:");
         core.debug(`${JSON.stringify(cachePaths)}`);
@@ -73675,13 +73747,14 @@ function saveCache(paths_1, key_1, options_1) {
             }
             const archiveFileSize = utils.getArchiveFileSizeInBytes(archivePath);
             core.debug(`File Size: ${archiveFileSize}`);
-            yield cacheHttpClient.saveCache(key, paths, archivePath, {
+            const saved = yield cacheHttpClient.saveCache(key, paths, archivePath, {
                 compressionMethod,
                 enableCrossOsArchive,
                 cacheSize: archiveFileSize
             });
-            // dummy cacheId, if we get there without raising, it means the cache has been saved
-            cacheId = 1;
+            if (saved) {
+                result = "saved";
+            }
         }
         catch (error) {
             const typedError = error;
@@ -73704,7 +73777,7 @@ function saveCache(paths_1, key_1, options_1) {
                 core.debug(`Failed to delete archive: ${error}`);
             }
         }
-        return cacheId;
+        return result;
     });
 }
 
@@ -74046,9 +74119,13 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getCacheVersion = getCacheVersion;
-exports.getS3Prefix = getS3Prefix;
+exports.getWriteS3Prefix = getWriteS3Prefix;
+exports.getReadS3Prefixes = getReadS3Prefixes;
+exports.isValidS3Prefix = isValidS3Prefix;
+const core = __importStar(__nccwpck_require__(37484));
 const crypto = __importStar(__nccwpck_require__(76982));
 const versionSalt = "1.0";
+const maxReadPrefixes = 4;
 function getCacheVersion(paths, compressionMethod, enableCrossOsArchive = false) {
     // don't pass changes upstream
     const components = paths.slice();
@@ -74061,24 +74138,95 @@ function getCacheVersion(paths, compressionMethod, enableCrossOsArchive = false)
     if (process.platform === "win32" && !enableCrossOsArchive) {
         components.push("windows-only");
     }
-    // Add salt to cache version to support breaking changes in cache entry
+    // Add salt to support breaking changes in cache entry
     components.push(versionSalt);
     return crypto
         .createHash("sha256")
         .update(components.join("|"))
         .digest("hex");
 }
-function getS3Prefix(paths, { compressionMethod, enableCrossOsArchive }) {
-    const repository = process.env.GITHUB_REPOSITORY;
-    const repoPrefix = process.env.RUNS_ON_S3_CACHE_REPO_PREFIX;
-    const version = getCacheVersion(paths, compressionMethod, enableCrossOsArchive);
-    if (repoPrefix && repoPrefix.trim() !== "") {
-        return [normalizeS3Prefix(repoPrefix), version].join("/");
+function getWriteS3Prefix(paths, options) {
+    const writePrefix = normalizeS3Prefix(process.env.RUNS_ON_S3_CACHE_WRITE_PREFIX);
+    if (!writePrefix) {
+        return undefined;
     }
-    return ["cache", repository, version].join("/");
+    if (!isValidS3Prefix(writePrefix)) {
+        core.warning(`RUNS_ON_S3_CACHE_WRITE_PREFIX contains invalid path segments; cache save is disabled.`);
+        return undefined;
+    }
+    return getS3Prefix(writePrefix, paths, options);
+}
+function getReadS3Prefixes(paths, options) {
+    const repositoryPrefixes = getReadRepositoryPrefixes();
+    if (repositoryPrefixes.length === 0) {
+        return [];
+    }
+    // The cache version is prefix-independent; compute it once.
+    const version = getCacheVersion(paths, options.compressionMethod, options.enableCrossOsArchive);
+    return repositoryPrefixes.map(prefix => [prefix, version].join("/"));
+}
+function getReadRepositoryPrefixes() {
+    const raw = process.env.RUNS_ON_S3_CACHE_READ_PREFIXES;
+    if (!raw || raw.trim() === "") {
+        core.warning("RUNS_ON_S3_CACHE_READ_PREFIXES is not set; cache restore is disabled.");
+        return [];
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) {
+            core.warning("RUNS_ON_S3_CACHE_READ_PREFIXES must be a JSON array; cache restore is disabled.");
+            return [];
+        }
+        const candidates = uniqueNormalizedPrefixes(parsed.filter((value) => typeof value === "string"));
+        const prefixes = candidates.filter(prefix => {
+            if (isValidS3Prefix(prefix)) {
+                return true;
+            }
+            core.warning(`RUNS_ON_S3_CACHE_READ_PREFIXES entry "${prefix}" contains invalid path segments and was skipped.`);
+            return false;
+        });
+        if (prefixes.length === 0) {
+            core.warning("RUNS_ON_S3_CACHE_READ_PREFIXES contains no usable prefixes; cache restore is disabled.");
+        }
+        if (prefixes.length > maxReadPrefixes) {
+            core.warning(`RUNS_ON_S3_CACHE_READ_PREFIXES has more than ${maxReadPrefixes} prefixes; using the first ${maxReadPrefixes}.`);
+            return prefixes.slice(0, maxReadPrefixes);
+        }
+        return prefixes;
+    }
+    catch (_a) {
+        core.warning("RUNS_ON_S3_CACHE_READ_PREFIXES is invalid JSON; cache restore is disabled.");
+        return [];
+    }
+}
+function getS3Prefix(repositoryPrefix, paths, { compressionMethod, enableCrossOsArchive }) {
+    return [
+        repositoryPrefix,
+        getCacheVersion(paths, compressionMethod, enableCrossOsArchive)
+    ].join("/");
+}
+function uniqueNormalizedPrefixes(values) {
+    const prefixes = [];
+    const seen = new Set();
+    for (const value of values) {
+        const prefix = normalizeS3Prefix(value);
+        if (prefix && !seen.has(prefix)) {
+            seen.add(prefix);
+            prefixes.push(prefix);
+        }
+    }
+    return prefixes;
+}
+function isValidS3Prefix(prefix) {
+    if (prefix === "") {
+        return false;
+    }
+    return prefix
+        .split("/")
+        .every(segment => segment !== "" && segment !== "." && segment !== "..");
 }
 function normalizeS3Prefix(prefix) {
-    return prefix.trim().replace(/^\/+|\/+$/g, "");
+    return (prefix || "").trim().replace(/^\/+|\/+$/g, "");
 }
 
 
@@ -74166,7 +74314,7 @@ function restoreImpl(stateProvider, earlyExit) {
             let cacheKey;
             if (canSaveToS3) {
                 core.info("The cache action detected a local S3 bucket cache. Using it.");
-                cacheKey = yield custom.restoreCache(cachePaths, primaryKey, restoreKeys, { lookupOnly: lookupOnly });
+                cacheKey = yield custom.restoreCache(cachePaths, primaryKey, restoreKeys, { lookupOnly: lookupOnly }, enableCrossOsArchive);
             }
             else {
                 cacheKey = yield cache.restoreCache(cachePaths, primaryKey, restoreKeys, { lookupOnly: lookupOnly }, enableCrossOsArchive);
