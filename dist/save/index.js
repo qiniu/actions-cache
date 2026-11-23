@@ -73318,14 +73318,10 @@ const client_s3_1 = __nccwpck_require__(53711);
 const lib_storage_1 = __nccwpck_require__(22358);
 const s3_request_presigner_1 = __nccwpck_require__(18505);
 const fs_1 = __nccwpck_require__(79896);
+const credentials_1 = __nccwpck_require__(87509);
 const downloadUtils_1 = __nccwpck_require__(118);
 const prefix_1 = __nccwpck_require__(33327);
 const maxListPages = 10;
-const runnerdCredentials = {
-    accessKeyId: process.env.RUNS_ON_S3_ACCESS_KEY_ID || "",
-    secretAccessKey: process.env.RUNS_ON_S3_SECRET_ACCESS_KEY || "",
-    sessionToken: process.env.RUNS_ON_S3_SESSION_TOKEN
-};
 const endpoint = process.env.RUNS_ON_S3_BUCKET_ENDPOINT;
 function getBucketName() {
     const value = process.env.RUNS_ON_S3_BUCKET_CACHE;
@@ -73347,7 +73343,7 @@ exports.s3Client = new client_s3_1.S3Client({
     region,
     forcePathStyle,
     endpoint,
-    credentials: runnerdCredentials
+    credentials: (0, credentials_1.runnerdCredentials)()
 });
 function getCacheEntry(keys, paths, options) {
     return __awaiter(this, void 0, void 0, function* () {
@@ -73441,10 +73437,12 @@ function downloadCache(archiveLocation, archivePath, options) {
                     Bucket: bucket,
                     Key: objectKey
                 });
-                const url = yield (0, s3_request_presigner_1.getSignedUrl)(exports.s3Client, command, {
-                    expiresIn: 3600
+                const signedURL = () => __awaiter(this, void 0, void 0, function* () {
+                    return (0, s3_request_presigner_1.getSignedUrl)(exports.s3Client, command, {
+                        expiresIn: 3600
+                    });
                 });
-                yield (0, downloadUtils_1.downloadCacheHttpClientConcurrent)(url, archivePath, Object.assign(Object.assign({}, options), { downloadConcurrency: downloadQueueSize, concurrentBlobDownloads: true, partSize: downloadPartSize }));
+                yield (0, downloadUtils_1.downloadCacheHttpClientConcurrent)(signedURL, archivePath, Object.assign(Object.assign({}, options), { downloadConcurrency: downloadQueueSize, concurrentBlobDownloads: true, partSize: downloadPartSize }));
                 // If we get here, download succeeded
                 return;
             }
@@ -73784,6 +73782,175 @@ function saveCache(paths_1, key_1, options_1) {
 
 /***/ }),
 
+/***/ 87509:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runnerdCredentials = runnerdCredentials;
+const core = __importStar(__nccwpck_require__(37484));
+const https_1 = __nccwpck_require__(65692);
+// Capture only runnerd's dedicated variables. Workflow AWS credentials must not
+// replace the cache identity, including when the SDK refreshes it hours later.
+function runnerdCredentials(env = process.env) {
+    const endpoint = env.RUNS_ON_S3_CREDENTIALS_URL || "";
+    const token = env.RUNS_ON_S3_CREDENTIALS_TOKEN || "";
+    const initial = {
+        accessKeyId: env.RUNS_ON_S3_ACCESS_KEY_ID || "",
+        secretAccessKey: env.RUNS_ON_S3_SECRET_ACCESS_KEY || "",
+        sessionToken: env.RUNS_ON_S3_SESSION_TOKEN
+    };
+    for (const secret of [token, ...Object.values(initial)]) {
+        if (secret)
+            core.setSecret(secret);
+    }
+    if (!endpoint && !token)
+        return initial;
+    // Validate inside the provider so a malformed configuration is handled by
+    // the action's ordinary cache-error path. Never silently use stale keys.
+    return () => __awaiter(this, void 0, void 0, function* () {
+        let url;
+        try {
+            url = new URL(endpoint);
+        }
+        catch (_a) {
+            throw new Error("Invalid runnerd cache credentials endpoint");
+        }
+        if (!token ||
+            token.length > 16384 ||
+            /[\r\n]/.test(token) ||
+            url.protocol !== "https:" ||
+            url.username ||
+            url.password ||
+            url.search ||
+            url.hash ||
+            url.pathname !== "/cache/credentials") {
+            throw new Error("Invalid runnerd cache refresh configuration");
+        }
+        return fetchCredentials(url, token);
+    });
+}
+function fetchCredentials(url, token) {
+    return new Promise((resolve, reject) => {
+        const req = (0, https_1.request)(url, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: "application/json"
+            }
+        }, res => {
+            // Native HTTPS never follows redirects. Neither response bodies
+            // nor transport messages may be echoed into workflow logs.
+            if (res.statusCode !== 200) {
+                res.destroy();
+                finish(new Error(`Cache credential refresh rejected (HTTP ${res.statusCode || 0})`));
+                return;
+            }
+            const chunks = [];
+            let size = 0;
+            res.on("data", (chunk) => {
+                size += chunk.length;
+                if (size > 16384) {
+                    res.destroy();
+                    finish(new Error("Cache credential response exceeds limit"));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            res.on("error", () => finish(new Error("Cache credential response failed")));
+            res.on("end", () => {
+                try {
+                    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                    const expiration = new Date(body.expiration);
+                    if (![
+                        body.access_key_id,
+                        body.secret_access_key,
+                        body.session_token
+                    ].every(value => typeof value === "string" &&
+                        value.trim().length > 0) ||
+                        !Number.isFinite(expiration.getTime()) ||
+                        expiration.getTime() <= Date.now() + 60000)
+                        throw new Error("invalid credentials");
+                    for (const secret of [
+                        body.access_key_id,
+                        body.secret_access_key,
+                        body.session_token
+                    ]) {
+                        core.setSecret(secret);
+                    }
+                    finish();
+                    resolve({
+                        accessKeyId: body.access_key_id,
+                        secretAccessKey: body.secret_access_key,
+                        sessionToken: body.session_token,
+                        expiration
+                    });
+                }
+                catch (_a) {
+                    finish(new Error("Invalid or expired cache credential response"));
+                }
+            });
+        });
+        const timer = setTimeout(() => {
+            req.destroy();
+            finish(new Error("Cache credential refresh timed out"));
+        }, 10000);
+        function finish(error) {
+            clearTimeout(timer);
+            if (error)
+                reject(error);
+        }
+        req.on("error", () => finish(new Error("Cache credential refresh failed")));
+        req.end();
+    });
+}
+
+
+/***/ }),
+
 /***/ 118:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -73835,10 +74002,15 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.DownloadProgress = void 0;
 exports.downloadCacheHttpClientConcurrent = downloadCacheHttpClientConcurrent;
 // Just a copy of the original file from the toolkit/actions/cache repository, with a change for byte range used in the downloadCacheHttpClientConcurrent function.
+const requestUtils_1 = __nccwpck_require__(32846);
 const core = __importStar(__nccwpck_require__(37484));
 const http_client_1 = __nccwpck_require__(54844);
 const fs = __importStar(__nccwpck_require__(79896));
-const requestUtils_1 = __nccwpck_require__(32846);
+function archiveURL(location) {
+    return __awaiter(this, void 0, void 0, function* () {
+        return typeof location === "string" ? location : location();
+    });
+}
 /**
  * Class for tracking the download state and displaying stats.
  */
@@ -73958,7 +74130,7 @@ function downloadCacheHttpClientConcurrent(archiveLocation, archivePath, options
         let progress;
         try {
             const res = yield (0, requestUtils_1.retryHttpClientResponse)("downloadCacheMetadata", () => __awaiter(this, void 0, void 0, function* () {
-                return yield httpClient.request("GET", archiveLocation, null, {
+                return yield httpClient.request("GET", yield archiveURL(archiveLocation), null, {
                     Range: "bytes=0-1"
                 });
             }));
@@ -74029,7 +74201,7 @@ function downloadSegmentRetry(httpClient, archiveLocation, offset, count) {
     return __awaiter(this, void 0, void 0, function* () {
         const retries = 5;
         let failures = 0;
-        while (true) {
+        for (;;) {
             try {
                 const timeout = 30000;
                 const result = yield promiseWithTimeout(timeout, downloadSegment(httpClient, archiveLocation, offset, count));
@@ -74050,7 +74222,7 @@ function downloadSegmentRetry(httpClient, archiveLocation, offset, count) {
 function downloadSegment(httpClient, archiveLocation, offset, count) {
     return __awaiter(this, void 0, void 0, function* () {
         const partRes = yield (0, requestUtils_1.retryHttpClientResponse)("downloadCachePart", () => __awaiter(this, void 0, void 0, function* () {
-            return yield httpClient.get(archiveLocation, {
+            return yield httpClient.get(yield archiveURL(archiveLocation), {
                 Range: `bytes=${offset}-${offset + count - 1}`
             });
         }));

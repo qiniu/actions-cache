@@ -32,7 +32,18 @@ No cache-specific workflow environment variables are required when using runnerd
 * `RUNS_ON_S3_CACHE_READ_PREFIXES`: required JSON array of ordered S3 namespace prefixes searched during restore. The action searches every key in one prefix before trying the next. Entries are de-duplicated, validated, and capped at four. runnerd always provides this variable when cache restore is enabled.
 * `RUNS_ON_S3_CACHE_WRITE_PREFIX`: single S3 namespace used for saving. It must also be present in the read prefixes if the saved cache should be restorable. When absent, save is skipped before archive creation. runnerd provides this variable only for workflows with a writable cache scope.
 * `RUNS_ON_S3_ACCESS_KEY_ID`, `RUNS_ON_S3_SECRET_ACCESS_KEY`, `RUNS_ON_S3_SESSION_TOKEN`: runnerd-internal scoped STS credential variables. They are required when the custom backend is enabled; do not set them in workflow YAML.
+* `RUNS_ON_S3_CREDENTIALS_URL`, `RUNS_ON_S3_CREDENTIALS_TOKEN`: paired runnerd refresh endpoint and attempt capability. The updated action uses these ahead of static credentials; do not configure or print them in workflow YAML.
 * `RUNS_ON_S3_FORCE_PATH_STYLE` or `AWS_S3_FORCE_PATH_STYLE`: force path-style S3 requests when set to `"true"`.
+
+## Long-running jobs
+
+runnerd requests STS credentials for at most 3600 seconds while keeping the configured Sandbox lifetime (including 24 hours). This action uses an expiring AWS SDK credentials provider to refresh through HTTPS `POST /cache/credentials`, including in the separate post-job save process. Download metadata, each range and retries get a fresh presigned URL. The refresh endpoint and token are captured only from dedicated runnerd variables; workflow `AWS_*` credentials do not replace them.
+
+When both refresh variables are absent, legacy runners continue using their static dedicated credentials. When either refresh variable is present, invalid configuration or a failed refresh fails the cache operation without falling back to expired static keys. Requests have a 10-second deadline, a 16 KiB response limit, and never follow redirects. Errors omit response bodies and transport details; credentials are masked in Action logs.
+
+Publish this Action update before deploying the paired runnerd change, and update workflows pinned to older commits. The Sandbox must reach runnerd's HTTPS endpoint (defaulting to the OAuth redirect URL origin, or operator-configured `cache.credentials_url`). Old Action revisions and custom scripts using static environment credentials cannot refresh. Existing jobs must be rerun to obtain the new capability. This does not extend the Sandbox hard timeout.
+
+The capability retains the original attempt and scoped cache policy. Stops, retries, configuration edits or key rotation prevent further refresh; STS credentials already issued remain valid until expiry. runnerd records safe STS failure reasons in the request timeline under `cache_sts`, and never sends owner AK/SK to the Action.
 
 ## Security model
 
