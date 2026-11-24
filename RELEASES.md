@@ -6,18 +6,31 @@
 > Relevant for maintainers with write access only.
 
 1. Switch to a new branch from `v5`.
-1. Run `npm test` to ensure all tests are passing.
-1. Update the version in [`package.json`](package.json).
+1. Run `npm ci --ignore-scripts`, `npm run lint`, and `npm test -- --runInBand`.
+1. Update the version in [`package.json`](package.json) and both root version fields in `package-lock.json`.
 1. Run `npm run build` to update the compiled files.
 1. Update this [`RELEASES.md`](RELEASES.md) with the new version and changes in the `## Changelog` section.
 1. Run `licensed cache` to update the license report.
 1. Run `licensed status` and resolve any warnings by updating the [`.licensed.yml`](.licensed.yml) file with the exceptions.
 1. Commit your changes and push your branch upstream.
 1. Open a pull request against `v5` and get it reviewed and merged.
-1. Run the [Release workflow](https://github.com/qiniu/actions-cache/actions/workflows/release.yml) with the new `vX.Y.Z` tag and `target_branch=v5`.
-    1. The workflow requires the release GitHub App and GPG signing secrets configured for this repository.
-    1. It tests and rebuilds the Action, creates the version tag, signs checksums, attests the artifacts, and publishes the release.
-    1. Confirm the workflow and release assets before announcing the version. Keep `v5` as the maintained branch; do not create a same-named tag.
+1. After all release PRs are merged, run the [Release workflow](https://github.com/qiniu/actions-cache/actions/workflows/release.yml) on `v5` with the new `vX.Y.Z` tag. Publish one release for the combined changes.
+    1. The workflow uses the built-in GitHub token and OIDC identity; no GitHub App or GPG secrets are required.
+    1. It verifies the package version, lint, tests, dependency audit, and all four committed bundles before packaging them with their licenses.
+    1. It generates GitHub artifact provenance and verifies the repository, release workflow, `v5` source ref, and exact source commit before creating the version tag and publishing the release.
+    1. Confirm the workflow and the archive, `SHA256SUMS`, and `provenance.sigstore.json` release assets. Keep `v5` as the maintained branch; do not create a same-named tag.
+
+To verify a downloaded release, run the following in an empty directory, replacing the tag and source commit with the release you intend to use:
+
+```sh
+TAG=v5.0.8
+SOURCE_COMMIT='replace-with-full-release-commit-sha'
+gh release download "$TAG" --repo qiniu/actions-cache --pattern 'qiniu-actions-cache-*.tar.gz' --pattern SHA256SUMS --pattern provenance.sigstore.json
+sha256sum -c SHA256SUMS
+gh attestation verify "qiniu-actions-cache-${TAG}.tar.gz" --bundle provenance.sigstore.json --repo qiniu/actions-cache --source-digest "$SOURCE_COMMIT" --source-ref refs/heads/v5 --signer-workflow qiniu/actions-cache/.github/workflows/release.yml
+```
+
+The provenance proves the archive's origin and source identity. Version tags and checksum files are not GPG-signed.
 
 ## Changelog
 
