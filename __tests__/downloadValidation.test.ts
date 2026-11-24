@@ -108,6 +108,43 @@ describe("Download Validation", () => {
         });
     });
 
+    it("signs metadata and every download part with current credentials", async () => {
+        const file = {
+            write: jest.fn().mockResolvedValue(undefined),
+            close: jest.fn().mockResolvedValue(undefined)
+        };
+        (fs.promises.open as jest.Mock).mockResolvedValue(file);
+        const sign = jest.fn(
+            async () =>
+                `https://example.com/cache?signature=${sign.mock.calls.length}`
+        );
+        const metadata = nock("https://example.com")
+            .get("/cache?signature=1")
+            .matchHeader("range", "bytes=0-1")
+            .reply(206, "ab", { "content-range": "bytes 0-1/4" });
+        const first = nock("https://example.com")
+            .get("/cache?signature=2")
+            .matchHeader("range", "bytes=0-1")
+            .reply(206, "ab");
+        const second = nock("https://example.com")
+            .get("/cache?signature=3")
+            .matchHeader("range", "bytes=2-3")
+            .reply(206, "cd");
+        await downloadCacheHttpClientConcurrent(sign, testArchivePath, {
+            partSize: 2,
+            downloadConcurrency: 1,
+            timeoutInMs: 1000
+        });
+        expect(sign).toHaveBeenCalledTimes(3);
+        expect([metadata, first, second].every(scope => scope.isDone())).toBe(
+            true
+        );
+        expect(file.write.mock.calls.map(call => call[0].toString())).toEqual([
+            "ab",
+            "cd"
+        ]);
+    });
+
     describe("restoreCache validation", () => {
         beforeEach(() => {
             // Mock environment variables for S3 backend

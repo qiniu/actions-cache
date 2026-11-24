@@ -1,7 +1,6 @@
-require("nock").disableNetConnect();
-
 module.exports = {
     clearMocks: true,
+    setupFilesAfterEnv: ["<rootDir>/__tests__/setup.js"],
     moduleFileExtensions: ["js", "ts"],
     testEnvironment: "node",
     testMatch: ["**/*.test.ts"],
