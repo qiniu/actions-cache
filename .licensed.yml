@@ -29,3 +29,6 @@ reviewed:
   - prettier # MIT
   - lodash # MIT
   - "@actions/http-client" # MIT
+  - ieee754 # 1.2.1: BSD-3-Clause LICENSE plus README license notice
+  - readable-stream # 3.6.2: MIT Node.js and Joyent license notices
+  - string_decoder # 1.3.0: MIT Node.js and Joyent license notices

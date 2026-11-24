@@ -39,6 +39,8 @@ No cache-specific workflow environment variables are required when using runnerd
 
 Pull requests and branch pushes run the Node.js 24 lint, type check, unit tests, and a rebuild check for all four committed Action bundles on a GitHub-hosted runner. Run `npm ci --ignore-scripts`, `npm run lint`, `npm test -- --runInBand`, and `npm run build` locally before submitting changes; include updated `dist/` files when the build changes them.
 
+The `@aws-sdk/xml-builder` override keeps version `3.972.30` with `fast-xml-parser` `5.12.0`. The newer AWS XML parser in `3.972.43` rejects UTF-8 BOM responses and truncates supplementary Unicode numeric entities, which can hide caches or corrupt object keys. Remove the override only after the SDK passes `s3XmlResponses.test.ts` with the replacement parser.
+
 The Tests workflow also supports manual dispatch for the existing RunsOn end-to-end save/restore tests. Those tests require dedicated RunsOn infrastructure and are separate from the automatic PR checks and the real runnerd regional/24-hour deployment acceptance.
 
 ## Long-running jobs
