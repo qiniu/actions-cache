@@ -73832,6 +73832,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runnerdCredentials = runnerdCredentials;
 const core = __importStar(__nccwpck_require__(37484));
+const http_client_1 = __nccwpck_require__(54844);
 const https_1 = __nccwpck_require__(65692);
 // Capture only runnerd's dedicated variables. Workflow AWS credentials must not
 // replace the cache identity, including when the SDK refreshes it hours later.
@@ -73875,8 +73876,24 @@ function runnerdCredentials(env = process.env) {
 }
 function fetchCredentials(url, token) {
     return new Promise((resolve, reject) => {
+        // Use the same proxy and NO_PROXY rules as cache downloads. Keep the
+        // raw HTTPS request so redirects, byte limits and the total deadline
+        // remain under our control.
+        const client = new http_client_1.HttpClient("qiniu-actions-cache", undefined, {
+            keepAlive: false
+        });
+        let agent;
+        try {
+            agent = client.getAgent(url.href);
+        }
+        catch (_a) {
+            client.dispose();
+            reject(new Error("Invalid cache credential proxy configuration"));
+            return;
+        }
         const req = (0, https_1.request)(url, {
             method: "POST",
+            agent,
             headers: {
                 Authorization: `Bearer ${token}`,
                 Accept: "application/json"
@@ -73940,6 +73957,7 @@ function fetchCredentials(url, token) {
         }, 10000);
         function finish(error) {
             clearTimeout(timer);
+            client.dispose();
             if (error)
                 reject(error);
         }

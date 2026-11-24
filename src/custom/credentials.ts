@@ -1,4 +1,5 @@
 import * as core from "@actions/core";
+import { HttpClient } from "@actions/http-client";
 import { request } from "https";
 
 interface CacheCredentials {
@@ -53,10 +54,25 @@ export function runnerdCredentials(
 
 function fetchCredentials(url: URL, token: string): Promise<CacheCredentials> {
     return new Promise((resolve, reject) => {
+        // Use the same proxy and NO_PROXY rules as cache downloads. Keep the
+        // raw HTTPS request so redirects, byte limits and the total deadline
+        // remain under our control.
+        const client = new HttpClient("qiniu-actions-cache", undefined, {
+            keepAlive: false
+        });
+        let agent: ReturnType<typeof client.getAgent>;
+        try {
+            agent = client.getAgent(url.href);
+        } catch {
+            client.dispose();
+            reject(new Error("Invalid cache credential proxy configuration"));
+            return;
+        }
         const req = request(
             url,
             {
                 method: "POST",
+                agent,
                 headers: {
                     Authorization: `Bearer ${token}`,
                     Accept: "application/json"
@@ -140,6 +156,7 @@ function fetchCredentials(url: URL, token: string): Promise<CacheCredentials> {
         }, 10000);
         function finish(error?: Error): void {
             clearTimeout(timer);
+            client.dispose();
             if (error) reject(error);
         }
         req.on("error", () =>
