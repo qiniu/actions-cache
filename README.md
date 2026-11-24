@@ -35,6 +35,12 @@ No cache-specific workflow environment variables are required when using runnerd
 * `RUNS_ON_S3_CREDENTIALS_URL`, `RUNS_ON_S3_CREDENTIALS_TOKEN`: paired runnerd refresh endpoint and attempt capability. The updated action uses these ahead of static credentials; do not configure or print them in workflow YAML.
 * `RUNS_ON_S3_FORCE_PATH_STYLE` or `AWS_S3_FORCE_PATH_STYLE`: force path-style S3 requests when set to `"true"`.
 
+## Development checks
+
+Pull requests and branch pushes run the Node.js 24 type check, unit tests, and a rebuild check for all four committed Action bundles on a GitHub-hosted runner. Run `npm ci --ignore-scripts`, `npm test -- --runInBand`, and `npm run build` locally before submitting changes; include updated `dist/` files when the build changes them.
+
+The Tests workflow also supports manual dispatch for the existing RunsOn end-to-end save/restore tests. Those tests require dedicated RunsOn infrastructure and are separate from the automatic PR checks and the real runnerd regional/24-hour deployment acceptance.
+
 ## Long-running jobs
 
 runnerd requests STS credentials for at most 3600 seconds while keeping the configured Sandbox lifetime (including 24 hours). This action uses an expiring AWS SDK credentials provider to refresh through HTTPS `POST /cache/credentials`, including in the separate post-job save process. Download metadata, each range and retries get a fresh presigned URL. The refresh endpoint and token are captured only from dedicated runnerd variables; workflow `AWS_*` credentials do not replace them.
