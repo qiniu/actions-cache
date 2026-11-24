@@ -41,7 +41,7 @@
     "eslint": "^8.28.0",
     "eslint-config-prettier": "^9.1.2",
     "eslint-plugin-import": "^2.32.0",
-    "eslint-plugin-jest": "^27.9.0",
+    "eslint-plugin-jest": "^28.14.0",
     "eslint-plugin-prettier": "^5.5.3",
     "eslint-plugin-simple-import-sort": "^12.1.1",
     "jest": "^29.7.0",
@@ -53,5 +53,11 @@
   },
   "engines": {
     "node": ">=24"
+  },
+  "overrides": {
+    "@aws-sdk/xml-builder": {
+      ".": "3.972.30",
+      "fast-xml-parser": "5.12.0"
+    }
   }
 }

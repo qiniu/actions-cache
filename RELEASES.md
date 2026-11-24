@@ -38,6 +38,8 @@ The provenance proves the archive's origin and source identity. Version tags and
 
 - Refresh scoped STS credentials for long-running runnerd jobs and post-job cache saves, including proxy-aware refresh and renewed download signatures.
 - Update runtime and development dependencies from #4, #6, #7, #8, #9, #11 and #12. The Babel update also supersedes #2 and #3.
+- Preserve S3 XML compatibility for UTF-8 BOMs and supplementary Unicode entities by pinning the AWS XML adapter while retaining the updated XML parser dependency. Add real SDK response regression tests.
+- Update the Jest ESLint plugin to support TypeScript ESLint 8 without peer dependency conflicts.
 - Rebuild all four Action entrypoints and enforce Node.js 24 lint, tests and bundle consistency in CI.
 - Publish the Action before deploying the companion runnerd update. Real regional and 24-hour workflow acceptance remains a deployment check.
 
