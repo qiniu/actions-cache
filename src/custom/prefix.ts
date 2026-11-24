@@ -1,5 +1,5 @@
-import * as core from "@actions/core";
 import { CompressionMethod } from "@actions/cache/lib/internal/constants";
+import * as core from "@actions/core";
 import * as crypto from "crypto";
 
 const versionSalt = "1.0";

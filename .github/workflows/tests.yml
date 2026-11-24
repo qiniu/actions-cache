@@ -39,6 +39,8 @@ jobs:
         cache: npm
     - name: Install dependencies
       run: npm ci --ignore-scripts
+    - name: Lint
+      run: npm run lint
     - name: Type-check and test
       run: npm test -- --runInBand
     - name: Build distributed artifacts

@@ -21,17 +21,21 @@ interface CacheInput {
 export function setInputs(input: CacheInput): void {
     setInput(Inputs.Path, input.path);
     setInput(Inputs.Key, input.key);
-    input.restoreKeys &&
+    if (input.restoreKeys) {
         setInput(Inputs.RestoreKeys, input.restoreKeys.join("\n"));
-    input.enableCrossOsArchive !== undefined &&
+    }
+    if (input.enableCrossOsArchive !== undefined) {
         setInput(
             Inputs.EnableCrossOsArchive,
             input.enableCrossOsArchive.toString()
         );
-    input.failOnCacheMiss !== undefined &&
+    }
+    if (input.failOnCacheMiss !== undefined) {
         setInput(Inputs.FailOnCacheMiss, input.failOnCacheMiss.toString());
-    input.lookupOnly !== undefined &&
+    }
+    if (input.lookupOnly !== undefined) {
         setInput(Inputs.LookupOnly, input.lookupOnly.toString());
+    }
 }
 
 export function clearInputs(): void {

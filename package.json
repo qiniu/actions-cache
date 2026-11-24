@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc && ncc build -o dist/restore src/restore.ts && ncc build -o dist/save src/save.ts && ncc build -o dist/restore-only src/restoreOnly.ts && ncc build -o dist/save-only src/saveOnly.ts",
     "test": "tsc --noEmit && jest --coverage",
-    "lint": "eslint **/*.ts --cache",
+    "lint": "eslint \"**/*.ts\" --cache",
     "format": "prettier --write **/*.ts",
     "format-check": "prettier --check **/*.ts"
   },
@@ -35,8 +35,8 @@
     "@types/jest": "^29.5.14",
     "@types/nock": "^11.1.0",
     "@types/node": "^24.1.0",
-    "@typescript-eslint/eslint-plugin": "^7.2.0",
-    "@typescript-eslint/parser": "^7.2.0",
+    "@typescript-eslint/eslint-plugin": "^8.74.0",
+    "@typescript-eslint/parser": "^8.74.0",
     "@vercel/ncc": "^0.38.3",
     "eslint": "^8.28.0",
     "eslint-config-prettier": "^9.1.2",
