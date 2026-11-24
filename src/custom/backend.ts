@@ -10,6 +10,7 @@ import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createReadStream } from "fs";
 
+import { runnerdCredentials } from "./credentials";
 import { downloadCacheHttpClientConcurrent } from "./downloadUtils";
 import { getReadS3Prefixes, getWriteS3Prefix, S3PrefixOptions } from "./prefix";
 
@@ -27,12 +28,6 @@ export interface ArtifactCacheEntry {
     creationTime?: string;
     archiveLocation?: string;
 }
-
-const runnerdCredentials = {
-    accessKeyId: process.env.RUNS_ON_S3_ACCESS_KEY_ID || "",
-    secretAccessKey: process.env.RUNS_ON_S3_SECRET_ACCESS_KEY || "",
-    sessionToken: process.env.RUNS_ON_S3_SESSION_TOKEN
-};
 
 const endpoint = process.env.RUNS_ON_S3_BUCKET_ENDPOINT;
 function getBucketName(): string {
@@ -61,7 +56,7 @@ export const s3Client = new S3Client({
     region,
     forcePathStyle,
     endpoint,
-    credentials: runnerdCredentials
+    credentials: runnerdCredentials()
 });
 
 export async function getCacheEntry(
@@ -182,11 +177,12 @@ export async function downloadCache(
                 Bucket: bucket,
                 Key: objectKey
             });
-            const url = await getSignedUrl(s3Client, command, {
-                expiresIn: 3600
-            });
+            const signedURL = async (): Promise<string> =>
+                getSignedUrl(s3Client, command, {
+                    expiresIn: 3600
+                });
 
-            await downloadCacheHttpClientConcurrent(url, archivePath, {
+            await downloadCacheHttpClientConcurrent(signedURL, archivePath, {
                 ...options,
                 downloadConcurrency: downloadQueueSize,
                 concurrentBlobDownloads: true,
