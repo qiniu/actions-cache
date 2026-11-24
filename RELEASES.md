@@ -5,7 +5,7 @@
 > [!NOTE]  
 > Relevant for maintainers with write access only.
 
-1. Switch to a new branch from `main`.
+1. Switch to a new branch from `v5`.
 1. Run `npm test` to ensure all tests are passing.
 1. Update the version in [`package.json`](package.json).
 1. Run `npm run build` to update the compiled files.
@@ -13,17 +13,20 @@
 1. Run `licensed cache` to update the license report.
 1. Run `licensed status` and resolve any warnings by updating the [`.licensed.yml`](.licensed.yml) file with the exceptions.
 1. Commit your changes and push your branch upstream.
-1. Open a pull request against `main` and get it reviewed and merged.
-1. Draft a new release https://github.com/actions/cache/releases use the same version number used in `package.json`
-    1. Create a new tag with the version number.
-    1. Auto generate release notes and update them to match the changes you made in `RELEASES.md`.
-    1. Toggle the set as the latest release option.
-    1. Publish the release.
-1. Navigate to https://github.com/actions/cache/actions/workflows/release-new-action-version.yml
-    1. There should be a workflow run queued with the same version number.
-    1. Approve the run to publish the new version and update the major tags for this action. 
+1. Open a pull request against `v5` and get it reviewed and merged.
+1. Run the [Release workflow](https://github.com/qiniu/actions-cache/actions/workflows/release.yml) with the new `vX.Y.Z` tag and `target_branch=v5`.
+    1. The workflow requires the release GitHub App and GPG signing secrets configured for this repository.
+    1. It tests and rebuilds the Action, creates the version tag, signs checksums, attests the artifacts, and publishes the release.
+    1. Confirm the workflow and release assets before announcing the version. Keep `v5` as the maintained branch; do not create a same-named tag.
 
 ## Changelog
+
+### 5.0.8 (Qiniu)
+
+- Refresh scoped STS credentials for long-running runnerd jobs and post-job cache saves, including proxy-aware refresh and renewed download signatures.
+- Update runtime and development dependencies from #4, #6, #7, #8, #9, #11 and #12. The Babel update also supersedes #2 and #3.
+- Rebuild all four Action entrypoints and enforce Node.js 24 lint, tests and bundle consistency in CI.
+- Publish the Action before deploying the companion runnerd update. Real regional and 24-hour workflow acceptance remains a deployment check.
 
 ### 5.0.4
 

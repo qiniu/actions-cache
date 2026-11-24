@@ -37,7 +37,7 @@ No cache-specific workflow environment variables are required when using runnerd
 
 ## Development checks
 
-Pull requests and branch pushes run the Node.js 24 type check, unit tests, and a rebuild check for all four committed Action bundles on a GitHub-hosted runner. Run `npm ci --ignore-scripts`, `npm test -- --runInBand`, and `npm run build` locally before submitting changes; include updated `dist/` files when the build changes them.
+Pull requests and branch pushes run the Node.js 24 lint, type check, unit tests, and a rebuild check for all four committed Action bundles on a GitHub-hosted runner. Run `npm ci --ignore-scripts`, `npm run lint`, `npm test -- --runInBand`, and `npm run build` locally before submitting changes; include updated `dist/` files when the build changes them.
 
 The Tests workflow also supports manual dispatch for the existing RunsOn end-to-end save/restore tests. Those tests require dedicated RunsOn infrastructure and are separate from the automatic PR checks and the real runnerd regional/24-hour deployment acceptance.
 

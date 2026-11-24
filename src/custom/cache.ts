@@ -1,15 +1,16 @@
 // https://github.com/actions/toolkit/blob/%40actions/cache%403.2.2/packages/cache/src/cache.ts
 
-import * as core from "@actions/core";
-import * as path from "path";
 import * as utils from "@actions/cache/lib/internal/cacheUtils";
-import * as cacheHttpClient from "./backend";
 import {
     createTar,
     extractTar,
     listTar
 } from "@actions/cache/lib/internal/tar";
 import { DownloadOptions, UploadOptions } from "@actions/cache/lib/options";
+import * as core from "@actions/core";
+import * as path from "path";
+
+import * as cacheHttpClient from "./backend";
 import { getWriteS3Prefix } from "./prefix";
 
 export class ValidationError extends Error {
