@@ -39,6 +39,8 @@ beforeAll(() => {
 
 beforeEach(() => {
     jest.restoreAllMocks();
+    // Assert failure reporting without setting the test process exit code.
+    jest.spyOn(core, "setFailed").mockImplementation();
     process.env[Events.Key] = Events.Push;
     process.env[RefKey] = "refs/heads/feature-branch";
 

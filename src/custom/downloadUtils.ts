@@ -1,13 +1,19 @@
 // Just a copy of the original file from the toolkit/actions/cache repository, with a change for byte range used in the downloadCacheHttpClientConcurrent function.
+import { retryHttpClientResponse } from "@actions/cache/lib/internal/requestUtils";
+import { DownloadOptions } from "@actions/cache/lib/options";
 import * as core from "@actions/core";
 import { HttpClient } from "@actions/http-client";
 import { TransferProgressEvent } from "@azure/core-rest-pipeline";
 import * as fs from "fs";
-import { DownloadOptions } from "@actions/cache/lib/options";
-import { retryHttpClientResponse } from "@actions/cache/lib/internal/requestUtils";
 
 export interface RunsOnDownloadOptions extends DownloadOptions {
     partSize: number;
+}
+
+type ArchiveLocation = string | (() => Promise<string>);
+
+async function archiveURL(location: ArchiveLocation): Promise<string> {
+    return typeof location === "string" ? location : location();
 }
 
 /**
@@ -151,7 +157,7 @@ export class DownloadProgress {
  * @param archivePath the local path where the cache is saved
  */
 export async function downloadCacheHttpClientConcurrent(
-    archiveLocation: string,
+    archiveLocation: ArchiveLocation,
     archivePath: fs.PathLike,
     options: RunsOnDownloadOptions
 ): Promise<void> {
@@ -165,9 +171,14 @@ export async function downloadCacheHttpClientConcurrent(
         const res = await retryHttpClientResponse(
             "downloadCacheMetadata",
             async () =>
-                await httpClient.request("GET", archiveLocation, null, {
-                    Range: "bytes=0-1"
-                })
+                await httpClient.request(
+                    "GET",
+                    await archiveURL(archiveLocation),
+                    null,
+                    {
+                        Range: "bytes=0-1"
+                    }
+                )
         );
 
         const contentRange = res.message.headers["content-range"];
@@ -265,14 +276,14 @@ export async function downloadCacheHttpClientConcurrent(
 
 async function downloadSegmentRetry(
     httpClient: HttpClient,
-    archiveLocation: string,
+    archiveLocation: ArchiveLocation,
     offset: number,
     count: number
 ): Promise<DownloadSegment> {
     const retries = 5;
     let failures = 0;
 
-    while (true) {
+    for (;;) {
         try {
             const timeout = 30000;
             const result = await promiseWithTimeout(
@@ -296,14 +307,14 @@ async function downloadSegmentRetry(
 
 async function downloadSegment(
     httpClient: HttpClient,
-    archiveLocation: string,
+    archiveLocation: ArchiveLocation,
     offset: number,
     count: number
 ): Promise<DownloadSegment> {
     const partRes = await retryHttpClientResponse(
         "downloadCachePart",
         async () =>
-            await httpClient.get(archiveLocation, {
+            await httpClient.get(await archiveURL(archiveLocation), {
                 Range: `bytes=${offset}-${offset + count - 1}`
             })
     );
